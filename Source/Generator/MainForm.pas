@@ -72,12 +72,14 @@ var
   aCount: Integer;
   aTimeString: string;
   aDateTime: TDateTime;
+  timeBias: Integer;
 begin
   try
     aIni := TiniFile.Create(ExtractFilePath(Application.ExeName) + 'Settings.ini');
 
     try
       aCount := aIni.ReadInteger('SCHEDULE', 'COUNT', 0);
+      timeBias := aIni.ReadInteger('SCHEDULE', 'TIME_BIAS', 0);
 
       if DayOfTheWeek(Now) in [1..5] then
         begin
@@ -120,7 +122,7 @@ begin
 
           if aDateTime > Now then
             begin
-              nextTime := aDateTime;
+              nextTime := IncMinute(aDateTime, timeBias);
               Break;
             end;
         end;

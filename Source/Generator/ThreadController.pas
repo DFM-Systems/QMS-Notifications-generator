@@ -36,6 +36,14 @@ private
   threadTimeOutSeconds: Integer;
   totalMailFilesCreated: Integer;
   activeThreads: TObjectList<TSingleProjectThread>;
+
+  enableSiteDiary,
+  enableObservations,
+  enableCarForm,
+  enablePunchList: Boolean;
+
+  function CheckIfPunchlistNotificationRequired(aRecordRef, aRecordNotify:
+      string; aRecordModified: TDateTime): Boolean;
   function CheckResult(aResult: Pointer): Boolean;
   function ChekIfMaxThreadsRuning: Boolean;
   function CreateNewThread: Boolean;
@@ -54,6 +62,7 @@ private
   function ConvertTablesFromDB3toDB4: Boolean;
   procedure CopyFolder(const SourceDir, DestDir: string);
   function ImportCsvToDB4Table(aTable: string): Boolean;
+  function LoadPunchlistTemplate: string;
   procedure StartGeneration;
 
 public
@@ -73,6 +82,7 @@ end;
   //function ExportTableToCSV(aProjectDbPath, aTable, outputFolder, typesList: PAnsiChar): Pointer; stdcall; external 'DBISAM3_lib.dll';
   function ExportTableToCSV(aProjectDbPath, aTable, outputFolder, typesList: AnsiString): Pointer; stdcall; external 'DBISAM3_lib.dll';
   function ExportFormsToCSV(aProjectDbPath, aTable, outputFolder, filterString, olderRecordsThanDays: AnsiString): Pointer; stdcall; external 'DBISAM3_lib.dll';
+  function ExportPunchlistsToCSV(aProjectDbPath, aTable, outputFolder, filterString, olderRecordsThanDays: AnsiString): Pointer; stdcall; external 'DBISAM3_lib.dll';
 
 implementation
 
@@ -277,26 +287,16 @@ end;
 
 procedure TThreadController.ColectRecordsToNotifyAbout;
 var
-  aType, keysList: string;
+  aType, keysList, punchlistKeyList: string;
 begin
   keysList := '''''';
+  punchlistKeyList :=  '''''';
   try
     with qAction do
       begin
-//        Close;
-//        SQL.Clear;
-//        SQL.Add('Select Key, if(SavedTime <> null then SavedTime else Modified) as SavedTime from insp_Forms');
-//        SQL.Add('where type = ' + QuotedStr(aFormType) + ' and if(SavedTime <> null then SavedTime else Modified) >= :ModFrom');
-//        //SQL.Add('where type = ' + QuotedStr(aFormType) + ' and (if(SavedTime <> null then SavedTime else Modified) > :ModFrom and Modified < :ModifiedEnd)');        //and SavedTime >= :ModFrom
-//
-//        SQL.Add('and Notify <> "" and Status = ' + QuotedStr('Completed') + '');
-//        SQL.Add('and Template <> null and JSON <> "" and Deleted <> True ');
-//
-//        ParamByName('ModFrom').AsDate := dmMain.OBSModifiedWithinDate;
-
         Close;
         SQL.Clear;
-        SQL.Add('SELECT F.Key, F.Code, F.Type, F.ProjectRef, F.Status, F.Notify, F.SourceRef');
+        SQL.Add('SELECT F.Key, F.Code, F.Type, F.ProjectRef, F.Status, F.Notify, F.SourceRef, F.Modified');
         SQL.Add('FROM "' + tempPath + 'insp_Forms" F');
         SQL.Add('WHERE F.Deleted <> True and F.Notify <> null');
 
@@ -309,25 +309,43 @@ begin
         //Select CAR type forms, based on SourceRef
         SQL.Add('OR (F.SourceRef = ''9CA23B711D8B4FE79E168BC1EB026249'' and (F.Status = ''In Progress'' or F.Status = ''Completed'')))');
 
-//        SQL.Add('WHERE Key in (''270C16838DE34628959DF3423E86C929'',''76808711447744C5BC2E2D212EFC1313'',''87FD28E0E97E497FAE6A29488F9957D9'',''9A92B8FF4B5F4282984D666D67810081'',''ADD74E3DDAFB4DEBB6A6904BF3528B82'',''B6A0ECC505924E4E953D1A1EF10B8A90'',''B85393B40BDE4C0995747B0BBAF72DBE'',''E3D74BF95A9A432686D7C955F39A4286'')');
-//        SQL.Add('and Key in (''9D9CA666736249EFB949755CCCC22026'', ''233780715C914A51AD371A54008F8844'', ''54E4C8B35B9146E4825DF512CF11DE2A'', ''C77C28849CE744388A18A3037A63F1AC'')');
+        if enablePunchList then
+          begin
+            SQL.Add('UNION ALL');
+            SQL.Add('SELECT I.Key, I.Code, I.Type, I.ProjectRef, I.Status, I.Notify, I.SourceRef, I.Modified');
+            SQL.Add('FROM "' + tempPath + 'insp_PlannedInspections" I');
+            SQL.Add('WHERE I.Deleted <> True and I.Notify <> null');
+          end;
 
         Open;
         First;
 
         while not Eof do
           begin
-            if FieldByName('SourceRef').AsString = '9CA23B711D8B4FE79E168BC1EB026249' then
-              aType := 'CAR_FORM'
-            else
-              aType := FieldByName('Type').AsString;
-
-            if CheckIfNotificationRequired(FieldByName('Key').AsString, aType, FieldByName('Status').AsString) then
+            if FieldByName('Type').AsString = 'SN' then
               begin
-                if keysList = '''''' then
-                  keysList := '''' + FieldByName('Key').AsString + ''''
+                if CheckIfPunchlistNotificationRequired(FieldByName('Key').AsString, FieldByName('Notify').AsString, FieldByName('Modified').AsDateTime) then
+                  begin
+                    if punchlistKeyList = '''''' then
+                      punchlistKeyList := '''' + FieldByName('Key').AsString + ''''
+                    else
+                      punchlistKeyList := punchlistKeyList +  ',''' + FieldByName('Key').AsString + '''';
+                  end;
+              end
+            else
+              begin
+                if FieldByName('SourceRef').AsString = '9CA23B711D8B4FE79E168BC1EB026249' then
+                  aType := 'CAR_FORM'
                 else
-                  keysList := keysList +  ',''' + FieldByName('Key').AsString + '''';
+                  aType := FieldByName('Type').AsString;
+
+                if CheckIfNotificationRequired(FieldByName('Key').AsString, aType, FieldByName('Status').AsString) then
+                  begin
+                    if keysList = '''''' then
+                      keysList := '''' + FieldByName('Key').AsString + ''''
+                    else
+                      keysList := keysList +  ',''' + FieldByName('Key').AsString + '''';
+                  end;
               end;
 
             Next;
@@ -338,6 +356,15 @@ begin
         SQL.Add('INTO "Memory/SelectedRecords" FROM "' + tempPath + 'insp_Forms" F');
         SQL.Add('WHERE Key in ('+keysList+')');
         ExecSQL;
+
+        if (enablePunchList) and (punchlistKeyList <> '') then
+          begin
+            SQL.Clear;
+            SQL.Add('INSERT INTO "Memory/SelectedRecords" (Key, Code, Type, ProjectRef, Status, Notify)');
+            SQL.Add('SELECT Key, Code, Type, ProjectRef, Status, Notify FROM "' + tempPath + 'insp_PlannedInspections" ');
+            SQL.Add('WHERE Key in ('+punchlistKeyList+')');
+            ExecSQL;
+          end;
 
         SQL.Clear;
         SQL.Add('INSERT INTO "' + resultsDbPath + 'GenerateResults" (TransactionKey, RecordRef, Code, Type, ProjectRef, Status, Notify)');
@@ -409,6 +436,12 @@ begin
       includeAttachmentforSecondaryEmail := aIni.ReadBool('CONFIG', 'INCLUDE_ATTACHMENT_FOR_SECONDARY_EMAIL', True);
       selectRecordsOlderThanDays := aIni.ReadInteger('CONFIG', 'SELECT_RECORDS_OLDER_THAN_DAYS', -10);
 
+      //Suported types
+      enableSiteDiary := aIni.ReadBool('TYPES', 'SITE_DIARY', False);
+      enableObservations := aIni.ReadBool('TYPES', 'OBSERVATIONS', False);
+      enableCarForm := aIni.ReadBool('TYPES', 'CAR_FORM', False);
+      enablePunchList := aIni.ReadBool('TYPES', 'PUNCHLIST', False);
+
       aList.LoadFromFile(appBasePath + 'templates\OBSPDFLINK.htm');
       messageTemplate := aList.Text;
 
@@ -441,12 +474,20 @@ end;
 function TThreadController.CreateNewThread: Boolean;
 var
   aStarted: TDateTime;
+  emailTemplate: string;
 begin
   try
     with qAction do
       begin
         if not Eof then
           begin
+            if FieldByName('Type').AsString = 'SN' then
+              begin
+                emailTemplate := LoadPunchlistTemplate;
+              end
+            else
+              emailTemplate := messageTemplate;
+
             aStarted := Now;
 
             InsertThreadStartTime(
@@ -456,7 +497,7 @@ begin
 
             activeThreads.Add(
               TSingleProjectThread.Create(
-                messageTemplate,
+                emailTemplate,
                 messagesStorePath,
                 debugEmail,
                 FieldByName('Key').AsString, //Forms record Key
@@ -676,19 +717,92 @@ begin
     end;
 end;
 
+function TThreadController.CheckIfPunchlistNotificationRequired(aRecordRef,
+    aRecordNotify: string; aRecordModified: TDateTime): Boolean;
+begin
+  Result := False;
+
+  with qAction1 do
+    begin
+      Close;
+      SQL.Clear;
+      SQL.Add('SELECT RecordRef, Success, Status, Started, Notify from "' + resultsDbPath + 'GenerateResults"');
+      SQL.Add('WHERE RecordRef = :RecordRef and Success = True');
+      SQL.Add('ORDER BY Started DESC TOP 1');
+
+      ParamByName('RecordRef').AsString := aRecordRef;
+      Open;
+      First;
+
+      if FieldByName('RecordRef').AsString <> '' then
+        begin
+          if aRecordModified > FieldByName('Started').AsDateTime then
+            begin
+              Result := True;
+              Exit;
+            end;
+
+          if aRecordNotify <> FieldByName('Notify').AsString then
+            begin
+              Result := True;
+              Exit;
+            end;
+        end
+      else
+        Result := True;
+
+      Close;
+    end;
+end;
+
 function TThreadController.ConvertTablesFromDB3toDB4: Boolean;
 var
   aResult: Pointer;
   aResultString: string;
+  typeFilter, formsFilter: string;
 begin
   Result := True;
   CopyFolder(blankTablesPath, tempPath);
+
+//  enableSiteDiary := aIni.ReadBool('TYPES', 'SITE_DIARY', False);
+//  enableObservations := aIni.ReadBool('TYPES', 'OBSERVATIONS', False);
+//  enableCarForm
+
+  if enableSiteDiary then
+    formsFilter := '''Site Diary''';
+
+  if enableObservations then
+    begin
+      if formsFilter <> '' then
+        formsFilter := formsFilter + ', ''Diary'''
+      else
+        formsFilter := '''Diary''';
+    end;
+
+  if formsFilter <> '' then
+    begin
+      formsFilter := 'Type in (' + formsFilter + ')';
+    end;
+
+  if enableCarForm then
+    begin
+      if formsFilter <> '' then
+        formsFilter := '(' + formsFilter + ' or SourceRef = ''9CA23B711D8B4FE79E168BC1EB026249'')'
+      else
+        formsFilter := 'SourceRef = ''9CA23B711D8B4FE79E168BC1EB026249''';
+    end;
+
+  if formsFilter <> '' then
+    formsFilter := 'and ' + formsFilter
+  else
+    formsFilter := 'and Key = ''none''';
 
   if not (CheckResult(ExportFormsToCSV(
                         AnsiString(mainDbPath),
                         AnsiString('insp_Forms'),
                         AnsiString(tempPath),
-                        AnsiString('and (Type in (''Site Diary'', ''Diary'') or SourceRef = ''9CA23B711D8B4FE79E168BC1EB026249'')'),
+                        //AnsiString('and (Type in (''Site Diary'', ''Diary'') or SourceRef = ''9CA23B711D8B4FE79E168BC1EB026249'')'),
+                        AnsiString(formsFilter),
                         AnsiString(selectRecordsOlderThanDays.ToString)
               ))) then
     begin
@@ -699,6 +813,26 @@ begin
   else
     begin
       ImportCsvToDB4Table('insp_Forms');
+    end;
+
+  if enablePunchList then
+    begin
+      if not (CheckResult(ExportPunchlistsToCSV(
+                            AnsiString(mainDbPath),
+                            AnsiString('insp_PlannedInspections'),
+                            AnsiString(tempPath),
+                            AnsiString('and Type = ''SN'''),
+                            AnsiString(selectRecordsOlderThanDays.ToString)
+                  ))) then
+        begin
+          InsertControllerError('Failed to export insp_PlannedInspections from DBISAM3 Table');
+          Result := False;
+          Exit;
+        end
+      else
+        begin
+          ImportCsvToDB4Table('insp_PlannedInspections');
+        end;
     end;
 
   if not (CheckResult(ExportTableToCSV(
@@ -855,6 +989,28 @@ begin
       //ShowMessage('Error copying folder: ' + E.Message);
       raise;
     end;
+  end;
+end;
+
+
+function TThreadController.LoadPunchlistTemplate: string;
+var
+  aList: TStringList;
+  i: Integer;
+begin
+  try
+    aList := TStringList.Create;
+    try
+      aList.LoadFromFile(appBasePath + 'templates\punchlist.htm');
+      Result := aList.Text;
+    finally
+      aList.Free;
+    end;
+  except
+    on e : Exception do
+      begin
+        raise Exception.Create('LoadPunchlistTemplate Error: ' + E.ClassName + #10#13 + E.Message);
+      end;
   end;
 end;
 

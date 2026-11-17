@@ -31,6 +31,7 @@ private
   _recordKey,
   _recordCode,
   _recordType,
+  _recordStatus,
   _projectType,
   _projectNo,
   _projectName,
@@ -49,14 +50,14 @@ private
   _done: Boolean;
 
   function BuildEmailBody(aFileName, aProjectNo, aProjectName, aFormCode,
-      aFormCaption, aFormType, aFullLinkToPDF, aNotifyName: string;
+      aFormCaption, aFormType, aFullLinkToPDF, aNotifyName, aFullName: string;
       aDateCommenced: TDateTime): string;
   function CheckIfDone: Boolean;
   function GenerateFormPDF: Boolean;
   function ExtractFirstname(aFullName: string): string;
   function GetGUID32: string;
   function GetProcessTime: Integer;
-  procedure BuildEmailsMessages;
+  procedure BuildEmailsMessages(sourceTable: string = 'insp_Forms');
   function GetFileSize(const FileName: string): Int64;
   function InsertToMailTable(aUserRef, aFullName, aEmail, aSubject,
       aBodyFileName: string; includeAttachment: Boolean): Boolean;
@@ -143,18 +144,32 @@ begin
   qAction1.SessionName := dbsSingleProjec.SessionName;
 
   try
-    if GenerateFormPDF then
+    if _recordType = 'SN' then
       begin
-        BuildEmailsMessages;
+        //Disable attachment insertion, cause punchlist type does not generates PDF file.
+        _includeAttachmentforAllMails := False;
+        _includeAttachmentforSecondaryEmail := False;
+
+        BuildEmailsMessages('insp_PlannedInspections');
         _done := True;
         _finished := Now;
         resultString := 'T.ID: ' + Self.ThreadID.ToString + ' ' + _recordKey;
       end
     else
       begin
-        _failed := True;
-        _done := True;
-        resultString := 'Failed - T.ID: ' + Self.ThreadID.ToString + ' ' +  _recordKey;
+        if GenerateFormPDF then
+          begin
+            BuildEmailsMessages;
+            _done := True;
+            _finished := Now;
+            resultString := 'T.ID: ' + Self.ThreadID.ToString + ' ' + _recordKey;
+          end
+        else
+          begin
+            _failed := True;
+            _done := True;
+            resultString := 'Failed - T.ID: ' + Self.ThreadID.ToString + ' ' +  _recordKey;
+          end;
       end;
   except
     on e : Exception do
@@ -303,7 +318,8 @@ begin
 end;
 
 
-procedure TSingleProjectThread.BuildEmailsMessages;
+procedure TSingleProjectThread.BuildEmailsMessages(sourceTable: string =
+    'insp_Forms');
 var
   aMemo: TStringList;
   i, aUserRecordCount: Integer;
@@ -316,6 +332,7 @@ var
   aProjectName, aProjectNo: string;
   aFormDate: TDateTime;
   secondaryEmailNotifyNameText, notifyNameText, companyName: string;
+  emailSubject: string;
 begin
   aUserRecordCount := 0;
   try
@@ -327,7 +344,7 @@ begin
           begin
             Close;
             SQL.Clear;
-            SQL.Add('SELECT F.*, P.Name, P.ProjectNo FROM "'+_projectDbPath+'insp_Forms" F');
+            SQL.Add('SELECT F.*, P.Name, P.ProjectNo FROM "'+_projectDbPath + sourceTable +'" F');
             SQL.Add('LEFT OUTER JOIN "'+_projectDbPath+'Projects" P on P.Key = F.ProjectRef');
             SQL.Add('WHERE Key = :Key');
             ParamByName('Key').AsString := _recordKey;
@@ -341,20 +358,34 @@ begin
             aNotify := FieldByName('Notify').AsString;
             aProjectNo := FieldByName('ProjectNo').AsString;
             aProjectName := FieldByName('Name').AsString;
+            _recordStatus := FieldByName('Status').AsString;
 
             if aFormType.ToUpper = 'DIARY' then
               aFormType := 'Site Observation';
 
+            if aFormType.ToUpper = 'SN' then
+              emailSubject := 'QMS - assigned as the responsible person for the punchlist ' + aFormCaption
+            else
+              emailSubject := '(' + aFormCode + ') ' + aProjectNo + ' - ' + aProjectName + ' ' + aFormCaption;
+
             Close;
             SQL.Clear;
             SQL.Add('SELECT Key, Ref, UserRef, CompanyRef, Contact, CompanyEmail, CompanyName FROM "'+_projectDbPath+'insp_ProjectTeam"');
-            SQL.Add('WHERE Ref = :Ref and ProjectRef = :ProjectRef and Deleted <> True and Notifications = True');
+
+            if aFormType = 'SN' then //Punchlists uses Key value for inspections Responsible field insted of Ref fo Notified in insp_Forms
+              SQL.Add('WHERE Key = :Ref and ProjectRef = :ProjectRef and Deleted <> True and Notifications = True')
+            else
+              SQL.Add('WHERE Ref = :Ref and ProjectRef = :ProjectRef and Deleted <> True and Notifications = True');
+
             ParamByName('Ref').AsString := aNotify;
             ParamByName('ProjectRef').AsString := aProjectRef;
             Open;
 
             if RecordCount > 0 then
               begin
+                if aFormType = 'SN' then
+                  aNotify := FieldByName('Ref').AsString;
+
                 if FieldByName('UserRef').AsString <> '' then
                   begin
                     companyName := FieldByName('CompanyName').AsString;
@@ -377,6 +408,7 @@ begin
                           aFormType,
                           _fullLinkToPDF,
                           companyName + ' (' +FieldByName('FullName').AsString+ ')',
+                          FieldByName('FullName').AsString,
                           aFormDate
                         );
 
@@ -384,7 +416,7 @@ begin
                           FieldByName('Key').AsString,
                           FieldByName('FullName').AsString,
                           FieldByName('Email').AsString,
-                          '(' + aFormCode + ') ' + aProjectNo + ' - ' + aProjectName + ' ' + aFormCaption,  //subject
+                          emailSubject,  //subject
                           aBodyFileName,
                           _includeAttachmentforAllMails
                         );
@@ -413,6 +445,7 @@ begin
                               aFormType,
                               _fullLinkToPDF,
                               FieldByName('CompanyName').AsString + ' (' +notifyNameText+ ')',
+                              notifyNameText,
                               aFormDate
                             );
 
@@ -420,7 +453,7 @@ begin
                               FieldByName('Key').AsString,
                               FieldByName('Contact').AsString,
                               FieldByName('CompanyEmail').AsString,
-                              '(' + aFormCode + ') ' + aProjectNo + ' - ' + aProjectName + ' ' + aFormCaption,  //subject
+                              emailSubject,  //subject
                               aBodyFileName,
                               _includeAttachmentforAllMails
                             );
@@ -448,6 +481,7 @@ begin
                               aFormType,
                               _fullLinkToPDF,
                               FieldByName('Name').AsString + ' (' +FieldByName('Contact').AsString+ ')',
+                              FieldByName('Contact').AsString,
                               aFormDate
                             );
 
@@ -455,7 +489,7 @@ begin
                               FieldByName('Key').AsString,
                               FieldByName('Name').AsString,
                               FieldByName('Email').AsString,
-                              '(' + aFormCode + ') ' + aProjectNo + ' - ' + aProjectName + ' ' + aFormCaption,  //subject
+                              emailSubject,  //subject
                               aBodyFileName,
                               _includeAttachmentforAllMails
                             );
@@ -502,6 +536,7 @@ begin
                               aFormType,
                               _fullLinkToPDF,
                               secondaryEmailNotifyNameText + ' (' +FieldByName('FullName').AsString+ ')',
+                              FieldByName('FullName').AsString,
                               aFormDate
                             );
 
@@ -509,7 +544,7 @@ begin
                               FieldByName('UserRef').AsString,
                               FieldByName('FullName').AsString,
                               FieldByName('Email').AsString,
-                              '(' + aFormCode + ') ' + aProjectNo + ' - ' + aProjectName + ' ' + aFormCaption,  //subject
+                              emailSubject,  //subject
                               aBodyFileName,
                               _includeAttachmentforAllMails
                             );
@@ -531,6 +566,7 @@ begin
                       aFormType,
                       _fullLinkToPDF,
                       'Secondary Email - ' + secondaryEmailNotifyNameText,
+                      'Administrator',
                       aFormDate
                     );
 
@@ -538,7 +574,7 @@ begin
                       'secondaryEmail',
                       _secondaryEmail,
                       _secondaryEmail,
-                      '(' + aFormCode + ') ' + aProjectNo + ' - ' + aProjectName + ' ' + aFormCaption,  //subject
+                      emailSubject,  //subject
                       aBodyFileName,
                       _includeAttachmentforSecondaryEmail
                     );
@@ -560,7 +596,7 @@ end;
 
 function TSingleProjectThread.BuildEmailBody(aFileName, aProjectNo,
     aProjectName, aFormCode, aFormCaption, aFormType, aFullLinkToPDF,
-    aNotifyName: string; aDateCommenced: TDateTime): string;
+    aNotifyName, aFullName: string; aDateCommenced: TDateTime): string;
 var
   aHTMLTemplate : string;
   aPlainTextTemplate : string;
@@ -577,16 +613,33 @@ begin
 
     outputEmailFile := subFolder + aFileName;
     aMemo.Text := _messageTemplate;
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;IMG&gt;', _ownerLogoPath, [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;PROJECTNAME&gt;', aProjectNo + ' - ' + aProjectName, [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;OBS&gt;', aFormCode + ' - ' + aFormCaption, [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;LINK&gt;', aFullLinkToPDF, [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;NOTIFY&gt;', aNotifyName, [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;TEXTCOLOR&gt;', 'white', [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;BUTTONCOLOR&gt;', '#5c6d89', [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;FORMTYPE&gt;', aFormType, [rfReplaceAll, rfIgnoreCase]);
-    aMemo.Text := StringReplace(aMemo.Text, '&lt;Date Commenced:&gt;', 'Date Commenced: ' + FormatDateTime('dd/mm/yyyy', aDateCommenced) , [rfReplaceAll, rfIgnoreCase]);
 
+    if aFormType = 'SN' then
+      begin
+        if aFullName = '' then
+          aFullName := 'QMS User';
+
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;IMG&gt;', _ownerLogoPath, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;PROJECTNAME&gt;', aProjectNo + ' - ' + aProjectName, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;Created Date:&gt;', 'Created Date: ' + FormatDateTime('dd/mm/yyyy', aDateCommenced) , [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;Punchlist No:&gt;', 'Punchlist No: ' + aFormCode, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;Punchlist Title:&gt;', 'Punchlist Title: ' + aFormCaption, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;Punchlist Status:&gt;', 'Punchlist Status: ' + _recordStatus, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;NOTIFY&gt;', aNotifyName, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;FULL_NAME&gt;', aFullName, [rfReplaceAll, rfIgnoreCase]);
+      end
+    else
+      begin
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;IMG&gt;', _ownerLogoPath, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;PROJECTNAME&gt;', aProjectNo + ' - ' + aProjectName, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;OBS&gt;', aFormCode + ' - ' + aFormCaption, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;LINK&gt;', aFullLinkToPDF, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;NOTIFY&gt;', aNotifyName, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;TEXTCOLOR&gt;', 'white', [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;BUTTONCOLOR&gt;', '#5c6d89', [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;FORMTYPE&gt;', aFormType, [rfReplaceAll, rfIgnoreCase]);
+        aMemo.Text := StringReplace(aMemo.Text, '&lt;Date Commenced:&gt;', 'Date Commenced: ' + FormatDateTime('dd/mm/yyyy', aDateCommenced) , [rfReplaceAll, rfIgnoreCase]);
+      end;
 
     aMemo.SaveToFile(outputEmailFile);
 
