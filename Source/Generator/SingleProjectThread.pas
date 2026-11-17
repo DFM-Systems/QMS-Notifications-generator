@@ -240,6 +240,83 @@ begin
 end;
 
 
+//function TSingleProjectThread.GenerateFormPDF: Boolean;
+//var
+//  StartupInfo: TStartupInfo;
+//  ProcessInfo: TProcessInformation;
+//  CmdLine: string;
+//  ExitCode: DWORD;
+//  fs: TFormatSettings;
+//  startTime: TDateTime;
+//  outpurFolder, subFolder: string;
+//  fileName: string;
+//begin
+//  try
+//    Result := False;
+//    startTime := Now;
+//
+//    // Prepare command line
+//    subFolder := _projectKey + '\OBS\' + _recordKey + FloatToStr(Now) + '\';
+//    outpurFolder := _pdfOutputPath + subFolder;
+//    fileName := _recordCode + ' ' + _recordType + ' ' + FormatDateTime('dd-mm-yyyy HH_nn_ss', Now) + '.pdf';
+//
+//    if ForceDirectories(outpurFolder) then
+//      begin
+//        _fullPdfOutputPath := outpurFolder + fileName;
+//        _fullLinkToPDF := TIdURI.URLEncode(_siteURL + subFolder + fileName);
+//      end
+//    else
+//      begin
+//        raise Exception.Create('Cant create output forlder: ' + outpurFolder);
+//      end;
+//
+//    CmdLine := Format('"%s" "%s" "%s" "%s"', [_appBasePath + '\Modules\ExportFormToPDF.exe',
+//                                               _recordKey,
+//                                               _mainDbPath,
+//                                               _fullPdfOutputPath]);
+//
+//    // Initialize StartupInfo
+//    FillChar(StartupInfo, SizeOf(StartupInfo), 0);
+//    StartupInfo.cb := SizeOf(StartupInfo);
+//    StartupInfo.dwFlags := STARTF_USESHOWWINDOW; // Use wShowWindow setting
+//    StartupInfo.wShowWindow := SW_HIDE; // Hide the window
+//
+//
+//    if CreateProcess(nil, PChar(CmdLine), nil, nil, False, 0, nil, nil, StartupInfo, ProcessInfo) then
+//    try
+//      WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
+//      GetExitCodeProcess(ProcessInfo.hProcess, ExitCode);
+//
+//      if (ExitCode = 0) or (ExitCode = 216) then
+//        begin
+//          if FileExists(_fullPdfOutputPath) then
+//            begin
+//              _completedStats := 'PDF generated successfully in ' + System.DateUtils.SecondsBetween(startTime, Now).ToString + 's';
+//              Result := True;
+//            end
+//          else
+//            begin
+//              _completedStats := 'PDF generation failed, file was not created';
+//            end;
+//        end
+//      else
+//        _completedStats := 'PDF generation failed, exit code: ' + IntToStr(ExitCode);
+//
+//    finally
+//      CloseHandle(ProcessInfo.hProcess);
+//      CloseHandle(ProcessInfo.hThread);
+//    end
+//    else
+//      _completedStats := 'Failed to start PDFGenerator.exe: ' + SysErrorMessage(GetLastError);
+//
+//  except
+//    on E: Exception do
+//      begin
+//        raise Exception.Create('Generate PDF Error: ' + #10#13 + E.Message);
+//      end;
+//  end;
+//end;
+
 function TSingleProjectThread.GenerateFormPDF: Boolean;
 var
   StartupInfo: TStartupInfo;
@@ -250,6 +327,9 @@ var
   startTime: TDateTime;
   outpurFolder, subFolder: string;
   fileName: string;
+  WaitResult: DWORD;
+const
+  PDF_TIMEOUT_MS = 6 * 60 * 1000; // 6 minutes timeout in milliseconds
 begin
   try
     Result := False;
@@ -271,9 +351,9 @@ begin
       end;
 
     CmdLine := Format('"%s" "%s" "%s" "%s"', [_appBasePath + '\Modules\ExportFormToPDF.exe',
-                                               _recordKey,
-                                               _mainDbPath,
-                                               _fullPdfOutputPath]);
+                                         _recordKey,
+                                         _mainDbPath,
+                                         _fullPdfOutputPath]);
 
     // Initialize StartupInfo
     FillChar(StartupInfo, SizeOf(StartupInfo), 0);
@@ -281,13 +361,17 @@ begin
     StartupInfo.dwFlags := STARTF_USESHOWWINDOW; // Use wShowWindow setting
     StartupInfo.wShowWindow := SW_HIDE; // Hide the window
 
-
     if CreateProcess(nil, PChar(CmdLine), nil, nil, False, 0, nil, nil, StartupInfo, ProcessInfo) then
     try
-      WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
-      GetExitCodeProcess(ProcessInfo.hProcess, ExitCode);
+      // Wait for the process to finish or timeout after 3 minutes
+      WaitResult := WaitForSingleObject(ProcessInfo.hProcess, PDF_TIMEOUT_MS);
 
-      if (ExitCode = 0) or (ExitCode = 216) then
+      if WaitResult = WAIT_OBJECT_0 then
+      begin
+        // Process finished within the time limit
+        GetExitCodeProcess(ProcessInfo.hProcess, ExitCode);
+
+        if (ExitCode = 0) or (ExitCode = 216) then
         begin
           if FileExists(_fullPdfOutputPath) then
             begin
@@ -299,8 +383,22 @@ begin
               _completedStats := 'PDF generation failed, file was not created';
             end;
         end
+        else
+          _completedStats := 'PDF generation failed, exit code: ' + IntToStr(ExitCode);
+      end
+      else if WaitResult = WAIT_TIMEOUT then
+      begin
+        // Process exceeded 6 minutes limit, terminate it forcefully
+        TerminateProcess(ProcessInfo.hProcess, 1);
+        _completedStats := 'PDF generation timed out after 3 minutes and was terminated';
+        Result := False;
+      end
       else
-        _completedStats := 'PDF generation failed, exit code: ' + IntToStr(ExitCode);
+      begin
+        // Handle potential wait errors
+        _completedStats := 'WaitForSingleObject failed: ' + SysErrorMessage(GetLastError);
+        Result := False;
+      end;
 
     finally
       CloseHandle(ProcessInfo.hProcess);
